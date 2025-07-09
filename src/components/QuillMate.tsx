@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -6,7 +6,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { FileUpload } from "./FileUpload";
 import { useToast } from "@/hooks/use-toast";
 import { 
   Lightbulb, 
@@ -85,27 +84,44 @@ export function QuillMate() {
     }
   };
 
-  const styleGenerate = async (prompt: string) => {
-    try {
-      const data = { input_text: prompt, mode: "", genre: "", tone: "", style: "" };
-      const response = await fetch("http://localhost:8000/enhance/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data)
-      });
-      const result = await response.json();
-      return result.output;
-    } catch (error) {
-      return `Error: ${error}`;
-    }
-  };
-
-  const exportToPDF = (text: string, filename = "quillmate_output.pdf") => {
-    toast({
-      title: "PDF Export",
-      description: "PDF export functionality would be implemented here",
+  const exportToPDF = async (text: string) => {
+  try {
+    const response = await fetch("http://localhost:8000/export-pdf/", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ text })
     });
-  };
+
+    if (!response.ok) {
+      throw new Error("Failed to export PDF");
+    }
+
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "quillmate_output.pdf";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+
+    toast({
+      title: "Export Successful",
+      description: "Your PDF has been downloaded.",
+    });
+
+  } catch (error) {
+    toast({
+      title: "Export Failed",
+      description: "There was a problem exporting the PDF.",
+      variant: "destructive"
+    });
+  }
+};
+
 
   return (
     <div className="min-h-screen bg-gradient-background p-6">
@@ -175,17 +191,17 @@ export function QuillMate() {
 
           {/* Tone Analyzer Tab */}
           <TabsContent value="analyze" className="animate-slide-in">
-            <ToneAnalyzer onAnalyze={analyze} />
+            <ToneAnalyzer onAnalyze={analyze} onExport={exportToPDF} />
           </TabsContent>
 
           {/* Style Mimicry Tab */}
           <TabsContent value="mimic" className="animate-slide-in">
-            <StyleMimicry onGenerate={styleGenerate} onExport={exportToPDF} />
+            <StyleMimicry onExport={exportToPDF} />
           </TabsContent>
 
           {/* Style Enhancer Tab */}
           <TabsContent value="enhance" className="animate-slide-in">
-            <StyleEnhancer onEnhance={enhance} />
+            <StyleEnhancer onEnhance={enhance} onExport={exportToPDF} />
           </TabsContent>
         </Tabs>
       </div>
@@ -388,8 +404,9 @@ function TextExpansion({ onExpand, onExport }: {
   );
 }
 
-function ToneAnalyzer({ onAnalyze }: {
+function ToneAnalyzer({ onAnalyze, onExport }: {
   onAnalyze: (inputText: string) => Promise<string>;
+  onExport: (text: string) => void;
 }) {
   const [input, setInput] = useState("");
   const [output, setOutput] = useState("");
@@ -442,6 +459,14 @@ function ToneAnalyzer({ onAnalyze }: {
               readOnly
               className="min-h-32 rounded-xl border-0 bg-muted/30 resize-none"
             />
+            <Button 
+              onClick={() => onExport(output)}
+              variant="outline"
+              className="rounded-xl border-primary/20 hover:bg-primary/10 transition-all duration-300"
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Export as PDF
+            </Button>
           </div>
         )}
       </CardContent>
@@ -449,19 +474,73 @@ function ToneAnalyzer({ onAnalyze }: {
   );
 }
 
-function StyleMimicry({ onGenerate, onExport }: {
-  onGenerate: (prompt: string) => Promise<string>;
+function StyleMimicry({ onExport }: {
   onExport: (text: string) => void;
 }) {
   const [prompt, setPrompt] = useState("");
   const [output, setOutput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [samplePreview, setSamplePreview] = useState<string | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [sampleUploaded, setSampleUploaded] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const mimic = async (inputText: string) => {
+    try {
+      const data = { input_text: inputText, mode: "", genre: "", tone: "", style: "" };
+      const response = await fetch("http://localhost:8000/mimic/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data)
+      });
+      const result = await response.json();
+      return result.output;
+    } catch (error) {
+      return `Error: ${error}`;
+    }
+  };
 
   const handleGenerate = async () => {
     setIsLoading(true);
-    const result = await onGenerate(prompt);
+    const result = await mimic(prompt);
     setOutput(result);
     setIsLoading(false);
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const allowedTypes = ["text/plain", "application/pdf"];
+    const allowedExtensions = [".txt", ".pdf"];
+    const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
+    if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExtension)) {
+      setUploadStatus("Invalid file type. Only .txt and .pdf are allowed.");
+      setSamplePreview(null);
+      setSampleUploaded(false);
+      return;
+    }
+    setUploadStatus("Uploading and parsing...");
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const response = await fetch("http://localhost:8000/upload/", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await response.json();
+      setUploadStatus(result.status);
+      if (result.preview) {
+        setSamplePreview(result.preview);
+        setSampleUploaded(true);
+      } else {
+        setSamplePreview(null);
+        setSampleUploaded(false);
+      }
+    } catch (err) {
+      setUploadStatus("Upload failed. Try again.");
+      setSamplePreview(null);
+      setSampleUploaded(false);
+    }
   };
 
   return (
@@ -472,12 +551,39 @@ function StyleMimicry({ onGenerate, onExport }: {
           Style Mimicry
         </CardTitle>
         <CardDescription>
-          Upload your writing sample and generate text in your style
+          Upload a sample of your writing (.txt preferred, .pdf experimental), then ask AI to write in your style.
         </CardDescription>
       </CardHeader>
       <CardContent className="p-8 space-y-6">
-        <FileUpload />
-        
+        <div className="space-y-2">
+          <label className="text-sm font-medium">Upload Your Writing Sample (.txt preferred, .pdf experimental)</label>
+          <div className="flex items-center gap-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.pdf,text/plain,application/pdf"
+              onChange={handleFileChange}
+              className="hidden"
+              id="mimic-upload"
+            />
+            <Button
+              type="button"
+              variant="gradient"
+              className="rounded-xl h-10 px-6 font-medium"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Choose File
+            </Button>
+            <span className="text-xs text-muted-foreground">TXT preferred, PDF experimental</span>
+          </div>
+          {uploadStatus && <div className="text-sm text-muted-foreground">{uploadStatus}</div>}
+          {samplePreview && (
+            <div className="mt-2 p-2 bg-muted/30 rounded">
+              <div className="text-xs font-bold mb-1">Sample Preview:</div>
+              <pre className="text-xs whitespace-pre-wrap max-h-40 overflow-y-auto">{samplePreview}</pre>
+            </div>
+          )}
+        </div>
         <div className="space-y-2">
           <Label htmlFor="mimic-prompt">Ask AI to write something in your style</Label>
           <Textarea
@@ -488,16 +594,14 @@ function StyleMimicry({ onGenerate, onExport }: {
             className="min-h-32 rounded-xl border-0 bg-muted/50 focus:bg-background transition-all duration-300 resize-none"
           />
         </div>
-
         <Button 
           onClick={handleGenerate}
-          disabled={isLoading || !prompt.trim()}
+          disabled={isLoading || !prompt.trim() || !sampleUploaded}
           variant="gradient"
           className="w-full rounded-xl h-12 text-lg font-medium"
         >
           {isLoading ? "Generating..." : "Generate in Your Style"}
         </Button>
-
         {output && (
           <div className="space-y-4 animate-fade-in">
             <Label>Mimicked Output</Label>
@@ -521,18 +625,59 @@ function StyleMimicry({ onGenerate, onExport }: {
   );
 }
 
-function StyleEnhancer({ onEnhance }: {
+function StyleEnhancer({ onEnhance, onExport }: {
   onEnhance: (inputText: string) => Promise<string>;
+  onExport: (text: string) => void;
 }) {
   const [input, setInput] = useState("");
   const [output, setOutput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [samplePreview, setSamplePreview] = useState<string | null>(null);
+  const [uploadStatus, setUploadStatus] = useState<string | null>(null);
+  const [sampleUploaded, setSampleUploaded] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleEnhance = async () => {
     setIsLoading(true);
     const result = await onEnhance(input);
     setOutput(result);
     setIsLoading(false);
+  };
+
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const allowedTypes = ["text/plain", "application/pdf"];
+    const allowedExtensions = [".txt", ".pdf"];
+    const fileExtension = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
+    if (!allowedTypes.includes(file.type) && !allowedExtensions.includes(fileExtension)) {
+      setUploadStatus("Invalid file type. Only .txt and .pdf are allowed.");
+      setSamplePreview(null);
+      setSampleUploaded(false);
+      return;
+    }
+    setUploadStatus("Uploading and parsing...");
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const response = await fetch("http://localhost:8000/upload/", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await response.json();
+      setUploadStatus(result.status);
+      if (result.preview) {
+        setSamplePreview(result.preview);
+        setSampleUploaded(true);
+      } else {
+        setSamplePreview(null);
+        setSampleUploaded(false);
+      }
+    } catch (err) {
+      setUploadStatus("Upload failed. Try again.");
+      setSamplePreview(null);
+      setSampleUploaded(false);
+    }
   };
 
   return (
@@ -543,10 +688,39 @@ function StyleEnhancer({ onEnhance }: {
           Style Enhancer
         </CardTitle>
         <CardDescription>
-          Enhance and improve your writing style
+          Upload a sample of your writing (.txt preferred, .pdf experimental), then enter text to enhance in your style.
         </CardDescription>
       </CardHeader>
       <CardContent className="p-8 space-y-6">
+        <div className="space-y-2">
+          <label className="text-sm font-medium">Upload Your Writing Sample (.txt preferred, .pdf experimental)</label>
+          <div className="flex items-center gap-3">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.pdf,text/plain,application/pdf"
+              onChange={handleFileChange}
+              className="hidden"
+              id="enhance-upload"
+            />
+            <Button
+              type="button"
+              variant="gradient"
+              className="rounded-xl h-10 px-6 font-medium"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              Choose File
+            </Button>
+            <span className="text-xs text-muted-foreground">TXT preferred, PDF experimental</span>
+          </div>
+          {uploadStatus && <div className="text-sm text-muted-foreground">{uploadStatus}</div>}
+          {samplePreview && (
+            <div className="mt-2 p-2 bg-muted/30 rounded">
+              <div className="text-xs font-bold mb-1">Sample Preview:</div>
+              <pre className="text-xs whitespace-pre-wrap max-h-40 overflow-y-auto">{samplePreview}</pre>
+            </div>
+          )}
+        </div>
         <div className="space-y-2">
           <Label htmlFor="enhance-input">Your Writing</Label>
           <Textarea
@@ -557,16 +731,14 @@ function StyleEnhancer({ onEnhance }: {
             className="min-h-32 rounded-xl border-0 bg-muted/50 focus:bg-background transition-all duration-300 resize-none"
           />
         </div>
-
-        <Button 
+        <Button
           onClick={handleEnhance}
-          disabled={isLoading || !input.trim()}
+          disabled={isLoading || !input.trim() || !sampleUploaded}
           variant="gradient"
           className="w-full rounded-xl h-12 text-lg font-medium"
         >
           {isLoading ? "Enhancing..." : "Enhance Style"}
         </Button>
-
         {output && (
           <div className="space-y-4 animate-fade-in">
             <Label>Enhanced Version</Label>
@@ -575,6 +747,14 @@ function StyleEnhancer({ onEnhance }: {
               readOnly
               className="min-h-48 rounded-xl border-0 bg-muted/30 resize-none"
             />
+            <Button
+              onClick={() => onExport(output)}
+              variant="outline"
+              className="rounded-xl border-primary/20 hover:bg-primary/10 transition-all duration-300"
+            >
+              <Download className="w-4 h-4 mr-2" />
+              Export as PDF
+            </Button>
           </div>
         )}
       </CardContent>
